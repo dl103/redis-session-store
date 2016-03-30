@@ -1,5 +1,6 @@
 # vim:fileencoding=utf-8
 require 'redis'
+require 'redis-lock'
 
 # Redis session storage for Rails, and for Rails only. Derived from
 # the MemCacheStore code, simply dropping in Redis instead.
@@ -44,7 +45,6 @@ class RedisSessionStore < ActionDispatch::Session::AbstractStore
   #
   def initialize(app, options = {})
     super
-
     redis_options = options[:redis] || {}
 
     @default_options.merge!(namespace: 'rack:session')
@@ -54,6 +54,13 @@ class RedisSessionStore < ActionDispatch::Session::AbstractStore
     @serializer = determine_serializer(options[:serializer])
     @on_session_load_error = options[:on_session_load_error]
     verify_handlers!
+  end
+
+  def call(env)
+    prepare_session(env)
+    env['redis_store.memoed_session'] = load_session(env)[1]
+    status, headers, body = @app.call(env)
+    commit_session(env, status, headers, body)
   end
 
   attr_accessor :on_redis_down, :on_session_load_error
@@ -107,7 +114,7 @@ class RedisSessionStore < ActionDispatch::Session::AbstractStore
   def load_session_from_redis(sid)
     data = redis.get(prefixed(sid))
     begin
-      data ? decode(data) : nil
+      data ? decode(data) : {}
     rescue => e
       destroy_session_from_sid(sid, drop: true)
       on_session_load_error.call(e, sid) if on_session_load_error
@@ -120,11 +127,21 @@ class RedisSessionStore < ActionDispatch::Session::AbstractStore
   end
 
   def set_session(env, sid, session_data, options = nil)
-    expiry = (options || env.fetch(ENV_SESSION_OPTIONS_KEY))[:expire_after]
-    if expiry
-      redis.setex(prefixed(sid), expiry, encode(session_data))
-    else
-      redis.set(prefixed(sid), encode(session_data))
+    env['redis_store.memoed_session'] = load_session_from_redis(sid) if !env['redis_store.memoed_session']
+    # compare changes
+    deleted_keys = env['redis_store.memoed_session'].keys - session_data.keys
+    added_or_changed_hash = Hash[*(session_data.to_a - env['redis_store.memoed_session'].to_a).flatten]
+    redis.lock("set_session") do |lock|
+      load_session_from_redis(sid) # grab most recent session, locked
+      updated_session = env['redis_store.memoed_session'].reject { |k,v| deleted_keys.include?(k) }
+      updated_session.merge!(added_or_changed_hash)
+      expiry = (options || env.fetch(ENV_SESSION_OPTIONS_KEY))[:expire_after]
+      if expiry
+        redis.setex(prefixed(sid), expiry, encode(updated_session))
+      else
+        redis.set(prefixed(sid), encode(updated_session))
+      end
+      env['redis_store.memoed_session'] = updated_session
     end
     return sid
   rescue Errno::ECONNREFUSED, Redis::CannotConnectError => e

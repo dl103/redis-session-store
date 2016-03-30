@@ -135,9 +135,9 @@ describe RedisSessionStore do
     # set_session to set the cookie value.  See:
     # https://github.com/rack/rack/blob/1.4.5/lib/rack/session/abstract/id.rb
 
-    let(:env)          { double('env') }
+    let(:env)          { {} }
     let(:session_id)   { 12_345 }
-    let(:session_data) { double('session_data') }
+    let(:session_data) { double('session_data', keys: [], to_a: []) }
     let(:options)      { { expire_after: 123 } }
 
     context 'when successfully persisting the session' do
@@ -349,7 +349,7 @@ describe RedisSessionStore do
   end
 
   describe 'session encoding' do
-    let(:env)          { double('env') }
+    let(:env)          { {} }
     let(:session_id)   { 12_345 }
     let(:session_data) { { 'some' => 'data' } }
     let(:options)      { {} }
@@ -358,6 +358,7 @@ describe RedisSessionStore do
     let(:expected_encoding) { encoded_data }
 
     before do
+      redis.stub(:lock).and_yield(nil)
       allow(store).to receive(:redis).and_return(redis)
     end
 
@@ -514,7 +515,7 @@ describe RedisSessionStore do
     end
   end
 
-  describe 'setting the session' do
+  describe 'updates the session' do
     it 'allows changing the session' do
       env = { 'rack.session.options' => {} }
       sid = 1234
@@ -538,5 +539,42 @@ describe RedisSessionStore do
       _, session = store.send(:get_session, env, sid)
       expect(session).to eq(data2)
     end
+
+    it 'adds keys to existing hash' do
+      env = { 'rack.session.options' => {} }
+      sid = 1234
+      allow(store).to receive(:redis).and_return(Redis.new)
+      data1 = { 'foo' => 'bar' }
+      store.send(:set_session, env, sid, data1)
+      data2 = { 'foo' => 'bar', 'baz' => 'wat' }
+      store.send(:set_session, env, sid, data2)
+      _, session = store.send(:get_session, env, sid)
+      expect(session).to eq(data2)
+    end
+
+    it 'deletes keys from existing hash' do
+      env = { 'rack.session.options' => {} }
+      sid = 1234
+      allow(store).to receive(:redis).and_return(Redis.new)
+      data1 = { 'foo' => 'bar', 'baz' => 'wat' }
+      store.send(:set_session, env, sid, data1)
+      data2 = { 'foo' => 'bar' }
+      store.send(:set_session, env, sid, data2)
+      _, session = store.send(:get_session, env, sid)
+      expect(session).to eq(data2)
+    end
+
+    it 'updates value from existing hash' do
+      env = { 'rack.session.options' => {} }
+      sid = 1234
+      allow(store).to receive(:redis).and_return(Redis.new)
+      data1 = { 'foo' => 'bar' }
+      store.send(:set_session, env, sid, data1)
+      data2 = { 'foo' => 'not_bar' }
+      store.send(:set_session, env, sid, data2)
+      _, session = store.send(:get_session, env, sid)
+      expect(session).to eq(data2)
+    end
+
   end
 end
