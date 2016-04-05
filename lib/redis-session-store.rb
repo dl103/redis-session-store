@@ -58,7 +58,6 @@ class RedisSessionStore < ActionDispatch::Session::AbstractStore
 
   def call(env)
     prepare_session(env)
-    env['redis_store.memoed_session'] = load_session(env)[1]
     status, headers, body = @app.call(env)
     commit_session(env, status, headers, body)
   end
@@ -103,6 +102,7 @@ class RedisSessionStore < ActionDispatch::Session::AbstractStore
       sid = generate_sid
       session = {}
     end
+    env['redis_store.memoed_session'] = session
 
     [sid, session]
   rescue Errno::ECONNREFUSED, Redis::CannotConnectError => e
