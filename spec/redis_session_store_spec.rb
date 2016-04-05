@@ -265,7 +265,7 @@ describe RedisSessionStore do
       allow(store).to receive(:generate_sid).and_return(fake_key)
       expect(redis).to receive(:get).with("#{options[:key_prefix]}#{fake_key}")
 
-      store.send(:get_session, double('env'), fake_key)
+      store.send(:get_session, {}, fake_key)
     end
 
     context 'when redis is down' do
